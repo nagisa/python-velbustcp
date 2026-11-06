@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import pytest
 from velbustcp.lib.connection.tcp.client import Client
 from pytest_mock import MockFixture, MockerFixture
@@ -239,3 +240,50 @@ async def test_client_send_not_own_packet(mocker: MockerFixture):
 
     await client.stop()
     await task
+
+
+@pytest.mark.asyncio
+async def test_connection_reset(mocker: MockerFixture, caplog: pytest.LogCaptureFixture):
+    # Create connection where the peer resets the connection, which is also what wait_closed reports
+    conn = get_mock_connection(mocker)
+    conn.reader.read = mocker.AsyncMock(side_effect=ConnectionResetError(104, "Connection reset by peer"))
+    conn.writer.wait_closed = mocker.AsyncMock(side_effect=ConnectionResetError(104, "Connection reset by peer"))
+    conn.should_authorize = False
+
+    closed = []
+
+    def handle_client_close(sender, **kwargs):
+        closed.append(sender)
+
+    on_client_close.connect(handle_client_close)
+
+    # Must not raise, and must still report the client as closed
+    client = Client(conn)
+    await client.start()
+
+    assert not client.is_active()
+    assert client in closed
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.asyncio
+async def test_auth_connection_reset(mocker: MockerFixture, caplog: pytest.LogCaptureFixture):
+    conn = get_mock_connection(mocker)
+    conn.reader.read = mocker.AsyncMock(side_effect=ConnectionResetError(104, "Connection reset by peer"))
+    conn.writer.wait_closed = mocker.AsyncMock(side_effect=ConnectionResetError(104, "Connection reset by peer"))
+    conn.should_authorize = True
+    conn.authorization_key = "velbus"
+
+    closed = []
+
+    def handle_client_close(sender, **kwargs):
+        closed.append(sender)
+
+    on_client_close.connect(handle_client_close)
+
+    client = Client(conn)
+    await client.start()
+
+    assert not client.is_active()
+    assert client in closed
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

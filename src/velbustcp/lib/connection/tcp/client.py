@@ -51,9 +51,16 @@ class Client:
         self.__is_active = False
         self.__logger.info("Closing client connection for %s", self.address())
         self.__connection.writer.close()
-        await self.__connection.writer.wait_closed()
-        self.__received_packets.clear()
-        on_client_close.send(self)
+
+        try:
+            await self.__connection.writer.wait_closed()
+        except OSError as e:
+            # wait_closed re-raises the error the transport was closed with, e.g. when the peer reset
+            # the connection. The connection is gone either way, so still clean up below.
+            self.__logger.info("Connection for %s was not closed cleanly: %s", self.address(), e)
+        finally:
+            self.__received_packets.clear()
+            on_client_close.send(self)
 
     async def send(self, data: bytearray) -> None:
         """Sends data to the client.
@@ -110,6 +117,9 @@ class Client:
 
             return self.__connection.authorization_key == data.decode("utf-8").strip()
 
+        except ConnectionError as e:
+            self.__logger.warning("Connection lost during authorization for %s: %s", self.address(), e)
+
         except Exception:
             self.__logger.exception("Exception during authorization for %s", self.address())
 
@@ -124,6 +134,9 @@ class Client:
         while self.is_active():
             try:
                 data = await self.__connection.reader.read(1024)
+            except ConnectionError as e:
+                self.__logger.warning("Connection lost with client %s: %s", self.address(), e)
+                return
             except Exception:
                 self.__logger.exception("Exception during packet receiving")
                 return
